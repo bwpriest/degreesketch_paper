@@ -104,7 +104,7 @@
 %	TITLE PAGE
 %----------------------------------------------------------------------------------------
 
-\title{Degree{S}ketch: Distributed Cardinality Sketches on Graphs with Applications}
+\title{\algoname{Degree{S}ketch}: Distributed Cardinality Sketches on Massive Graphs with Applications}
 \author{Benjamin W. Priest}
 \date{\today} % Date, can be changed to a custom date
 
@@ -112,342 +112,350 @@
 
 \maketitle
 
-\begin{abstract}
-The identification of important vertices or edges is a ubiquitous problem in the analysis of graphs.
-There are many application-dependent measures of importance, such as centrality indices (e.g. degree centrality, closeness centrality, betweenness centrality, and eigencentrality) and local triangle counts, among others.
-Traditional computational models assume that the entire input fits into working memory, which is impractical for very large graphs.
-The distributed memory model and streaming model are popular solutions to this problem of scale.
-In the distributed memory model a collection of processors partition the graph and must optimize communication in addition to execution time.
-The data stream model assumes only sequential access to the input, which is handled in small chunks.
-Data stream algorithms use sublinear memory and a small number of passes and seek to optimize update time, query time, and post processing time.  
-
-In this dissertation, we consider the application of distributed data stream algorithms to the sublinear approximation of several centrality indices, local triangle counts, and the simulation of random walks. 
-We pay special attention to the recovery of \emph{heavy hitters} - the largest elements relative to the given index.
-
-The first part of this dissertation focuses on serial graph stream algorithms.
-We present new algorithms providing streaming approximations of degree centrality and a semi-streaming constant-pass approximation of closeness centrality.
-We achieve our results by way of counting sketches and sampling sketches.
-
-The second part of this dissertation considers vertex-centric distributed graph stream algorithms.
-We develop hybrid pseudo-asynchronous communication protocols tailored to managing communication on distributed graph algorithms with asymmetric computational loads.
-We use this protocol as a framework to develop distributed streaming algorithms utilizing cardinality sketches.
-We present new algorithms for estimating local neighborhood sizes, as well as vertex- and edge-local triangle counts, with special attention paid to heavy hitter recovery.
-We also utilize reservoir sampling and $\ell_p$ sampling sketches to optimize the semi-streaming simulation of many random walks in parallel in distributed memory.
-We use these algorithms to approximate  $K$-path centrality as a proxy for recovery the top-$k$ betweenness centrality elements.
-\end{abstract}
-
-%\keywords{graph processing, evolving graphs, centrality, data stream model, sketching, pass-constrained algorithms}
 
 
-%----------------------------------------------------------------------------------------
-%----------------------------------------------------------------------------------------
-\section{Introduction} \label{chap:intro}
-%----------------------------------------------------------------------------------------
-%----------------------------------------------------------------------------------------
-\pagenumbering{arabic}
-
-
-
-Many modern computing problems focus on complex relationship networks arising from real-world data. 
-Many of these complex systems such as the Internet, communication networks, logistics and transportation systems, biological systems, epidemiological models, and social relationship networks map naturally onto graphs \cite{wasserman1994social}.
-%These networks, sometimes labeled ``social networks'' due to their roots in human behavior, often exhibit similar structure and submit to similar analyses. 
-A natural question that arises in the study of such networks is how to go about identifying ``important'' vertices and edges.
-How one might interpret importance within a graph is contingent upon its domain.
-Accordingly, investigators have devised a large number of importance measures that account for different structural properties. 
-These measures implicitly define an ordering on graphs, and typically only the top elements vis-\'a-vis the ordering are of analytic interest.
-
-However, most traditional RAM algorithms scale poorly to large datasets. 
-This means that very large graphs tend to confound standard algorithms for computing various important orderings. 
-Newer computational models such as the data stream model and the distributed memory model were introduced to address these scalability concerns.
-The data steam model assumes only sequential access to the data, and permits a sublinear amount of additional working memory.
-The time to update, query, and post process this data structure, as well as the number of passes and amount of additional memory are the important resources to optimize in the data stream model.
-The data stream model is a popular computational model for handling scalability in sequential algorithms.
-The distributed memory model partitions the data input across several processors, which may need to subsequently communicate with each other.
-The amount of communication is an important optimization resource.
-In practical terms, minimizing the amount of time processors spend waiting on their communication partners is also important.
-
-Although both models have been applied to very large graphs independently, there is relatively little literature focusing on the union of the two models of computation. 
-In this work we devise distributed data stream algorithms to approximate orderings of vertices and edges of large graphs. 
-We focus in particular on recovering the heavy hitters of these orderings.
-We consider the sublinear approximation of classic centrality scores, as well as local and global triangle counts.
-We also describe space-efficient methods for sampling random walks and subtrees in scale-free vertex-centric distributed graphs, and their application to estimating some centrality indices.
-
-%----------------------------------------------------------------------------------------
-\section{Data Stream Models} \label{intro:sec:data_stream}
-%----------------------------------------------------------------------------------------
-
-
-\textbf{The data stream model}:
-A stream $\sigma = \langle a_1, a_2, \dots, a_m \rangle$ is a sequence of elements in the universe $\mathcal{U}$, $|\mathcal{U}|=n$.
-We assume throughout that that the hardware has working memory storage capabilities $o( \min \{m, n\})$.
-We will use the notation $[p] = \{ 1, 2, \dots, p-1, p \}$ for $p \in \mathbb{Z}_{> 0}$ throughout for compactness. 
-For $t \in [m]$, we will sometimes refer to the state of $\sigma$ after reading $t$ updates as $\sigma(t)$.
-%Thus, clearly, storing $\sigma$ in working memory is not an option.
-A streaming algorithm $\mathcal{A}$ accumulates a data structure $\mathcal{S}$ while reading over $\sigma$. 
-We will sometimes use the notation $\mathcal{D}(\sigma)$ to indicate the data structure state after $\mathcal{A}$ has accumulated $\sigma$. 
-Authors generally assume $|\mathcal{D}| = \widetilde{O}(1) = O(\log m + \log n)$, where here the tilde suppresses logarithmic factors.
-We will also adopt the convention that, except where noted otherwise, we present space complexities in terms of machine words rather than bits.
-Except where noted otherwise, we will assume the base 2 logarithm in our presentation.
-
-\noindent
-\textbf{The semi-streaming model}:
-Unfortunately, logarithmic memory constraints are not always possible.
-In particular, it is known that many fundamental properties of complex structured data such matrices and graphs require memory linear in some dimension of the data \cite{mahoney2011randomized, mcgregor2009graph}.
-In such cases, the logarithmic requirements of streaming algorithms are sometimes relaxed to $O(n \polylog n)$ memory, where $\polylog n = \Theta(\log^c n)$ for some constant $c$. 
-In the case of matrices, here $n$ refers to one of the matrix's dimensions, whereas for graphs $n$ refers to the number of vertices.
-This is usually known as the \emph{semi-streaming model}, although some authors also use the term to refer to $O(n^{1+\gamma})$ for small $\gamma$ \cite{feigenbaum2005graph, muthukrishnan2005data}.
-
-\noindent
-\textbf{The frequency vector and dynamic streams}:
-A stream $\sigma$ is often thought of as updates to a hypothetical frequency vector $\mathbf{f}(\sigma)$, which holds a counter for each element in $\mathcal{U}$.
-We will drop the parameterization of $\mathbf{f}$ where it is clear.
-We will sometimes parameterize $\mathbf{f}(t)$ to refer to $\mathbf{f}$ after reading $t \in [m]$ updates from $\sigma$.
-$\mathcal{D}$ can be thought of as a lossy compression of $\mathbf{f}$ that approximately preserves some statistic thereof.
+%\begin{abstract}
+%The identification of important vertices or edges is a ubiquitous problem in the analysis of graphs.
+%There are many application-dependent measures of importance, such as centrality indices (e.g. degree centrality, closeness centrality, betweenness centrality, and eigencentrality) and local triangle counts, among others.
+%Traditional computational models assume that the entire input fits into working memory, which is impractical for very large graphs.
+%The distributed memory model and streaming model are popular solutions to this problem of scale.
+%In the distributed memory model a collection of processors partition the graph and must optimize communication in addition to execution time.
+%The data stream model assumes only sequential access to the input, which is handled in small chunks.
+%Data stream algorithms use sublinear memory and a small number of passes and seek to optimize update time, query time, and post processing time.  
+%
+%In this dissertation, we consider the application of distributed data stream algorithms to the sublinear approximation of several centrality indices, local triangle counts, and the simulation of random walks. 
+%We pay special attention to the recovery of \emph{heavy hitters} - the largest elements relative to the given index.
+%
+%The first part of this dissertation focuses on serial graph stream algorithms.
+%We present new algorithms providing streaming approximations of degree centrality and a semi-streaming constant-pass approximation of closeness centrality.
+%We achieve our results by way of counting sketches and sampling sketches.
+%
+%The second part of this dissertation considers vertex-centric distributed graph stream algorithms.
+%We develop hybrid pseudo-asynchronous communication protocols tailored to managing communication on distributed graph algorithms with asymmetric computational loads.
+%We use this protocol as a framework to develop distributed streaming algorithms utilizing cardinality sketches.
+%We present new algorithms for estimating local neighborhood sizes, as well as vertex- and edge-local triangle counts, with special attention paid to heavy hitter recovery.
+%We also utilize reservoir sampling and $\ell_p$ sampling sketches to optimize the semi-streaming simulation of many random walks in parallel in distributed memory.
+%We use these algorithms to approximate  $K$-path centrality as a proxy for recovery the top-$k$ betweenness centrality elements.
+%\end{abstract}
+%
+%%\keywords{graph processing, evolving graphs, centrality, data stream model, sketching, pass-constrained algorithms}
+%
+%
+%%----------------------------------------------------------------------------------------
+%%----------------------------------------------------------------------------------------
+%\section{Introduction} \label{chap:intro}
+%%----------------------------------------------------------------------------------------
+%%----------------------------------------------------------------------------------------
+%\pagenumbering{arabic}
+%
+%
+%
+%Many modern computing problems focus on complex relationship networks arising from real-world data. 
+%Many of these complex systems such as the Internet, communication networks, logistics and transportation systems, biological systems, epidemiological models, and social relationship networks map naturally onto graphs \cite{wasserman1994social}.
+%%These networks, sometimes labeled ``social networks'' due to their roots in human behavior, often exhibit similar structure and submit to similar analyses. 
+%A natural question that arises in the study of such networks is how to go about identifying ``important'' vertices and edges.
+%How one might interpret importance within a graph is contingent upon its domain.
+%Accordingly, investigators have devised a large number of importance measures that account for different structural properties. 
+%These measures implicitly define an ordering on graphs, and typically only the top elements vis-\'a-vis the ordering are of analytic interest.
+%
+%However, most traditional RAM algorithms scale poorly to large datasets. 
+%This means that very large graphs tend to confound standard algorithms for computing various important orderings. 
+%Newer computational models such as the data stream model and the distributed memory model were introduced to address these scalability concerns.
+%The data steam model assumes only sequential access to the data, and permits a sublinear amount of additional working memory.
+%The time to update, query, and post process this data structure, as well as the number of passes and amount of additional memory are the important resources to optimize in the data stream model.
+%The data stream model is a popular computational model for handling scalability in sequential algorithms.
+%The distributed memory model partitions the data input across several processors, which may need to subsequently communicate with each other.
+%The amount of communication is an important optimization resource.
+%In practical terms, minimizing the amount of time processors spend waiting on their communication partners is also important.
+%
+%Although both models have been applied to very large graphs independently, there is relatively little literature focusing on the union of the two models of computation. 
+%In this work we devise distributed data stream algorithms to approximate orderings of vertices and edges of large graphs. 
+%We focus in particular on recovering the heavy hitters of these orderings.
+%We consider the sublinear approximation of classic centrality scores, as well as local and global triangle counts.
+%We also describe space-efficient methods for sampling random walks and subtrees in scale-free vertex-centric distributed graphs, and their application to estimating some centrality indices.
+%
+%%----------------------------------------------------------------------------------------
+%\section{Data Stream Models} \label{intro:sec:data_stream}
+%%----------------------------------------------------------------------------------------
+%
+%
+%\textbf{The data stream model}:
+%A stream $\sigma = \langle a_1, a_2, \dots, a_m \rangle$ is a sequence of elements in the universe $\mathcal{U}$, $|\mathcal{U}|=n$.
+%We assume throughout that that the hardware has working memory storage capabilities $o( \min \{m, n\})$.
+%We will use the notation $[p] = \{ 1, 2, \dots, p-1, p \}$ for $p \in \mathbb{Z}_{> 0}$ throughout for compactness. 
+%For $t \in [m]$, we will sometimes refer to the state of $\sigma$ after reading $t$ updates as $\sigma(t)$.
+%%Thus, clearly, storing $\sigma$ in working memory is not an option.
+%A streaming algorithm $\mathcal{A}$ accumulates a data structure $\mathcal{S}$ while reading over $\sigma$. 
+%We will sometimes use the notation $\mathcal{D}(\sigma)$ to indicate the data structure state after $\mathcal{A}$ has accumulated $\sigma$. 
+%Authors generally assume $|\mathcal{D}| = \widetilde{O}(1) = O(\log m + \log n)$, where here the tilde suppresses logarithmic factors.
+%We will also adopt the convention that, except where noted otherwise, we present space complexities in terms of machine words rather than bits.
+%Except where noted otherwise, we will assume the base 2 logarithm in our presentation.
 %
 %\noindent
-%\textbf{Dynamic streams}:
-%If $\mathbf{f}$ is subject to change, then we call $\sigma$ a \emph{turnstile} or \emph{dynamic} stream.
-The stream $\sigma$'s elements are of the form $(i, c)$, where $i$ is an index of $\mathbf{f}$ (an element of $\mathcal{U}$), $c \in [-L, \dots, L]$ for some integer $L$, and $(i,c)$ indicates that $\mathbf{f}_i \gets \mathbf{f}_i + c$.
-Such a stream $\sigma$ is called a \emph{turnstile} or sometimes \emph{dynamic} stream. 
-In the \emph{cash register} model only positive updates are permitted, whereas in the \emph{strict} turnstile model all elements of $\mathbf{f}$ are guaranteed to retain nonnegativity.
-
-\noindent
-\textbf{Data sketching}:
-Let $\circ$ be the concatenation operator on streams.
-For $\mathcal{A}$ a streaming algorithm, we call its data structure $\mathcal{S}$ a \emph{sketch transform} if there is an operator $\oplus$ such that, for any streams $\sigma_1$ and $\sigma_2$, 
+%\textbf{The semi-streaming model}:
+%Unfortunately, logarithmic memory constraints are not always possible.
+%In particular, it is known that many fundamental properties of complex structured data such matrices and graphs require memory linear in some dimension of the data \cite{mahoney2011randomized, mcgregor2009graph}.
+%In such cases, the logarithmic requirements of streaming algorithms are sometimes relaxed to $O(n \polylog n)$ memory, where $\polylog n = \Theta(\log^c n)$ for some constant $c$. 
+%In the case of matrices, here $n$ refers to one of the matrix's dimensions, whereas for graphs $n$ refers to the number of vertices.
+%This is usually known as the \emph{semi-streaming model}, although some authors also use the term to refer to $O(n^{1+\gamma})$ for small $\gamma$ \cite{feigenbaum2005graph, muthukrishnan2005data}.
 %
-\begin{equation} \label{eq:merge}
-\mathcal{S}(\sigma_1) \oplus \mathcal{S}(\sigma_2) = \mathcal{S}(\sigma_1 \circ \sigma_2).
-\end{equation}
+%\noindent
+%\textbf{The frequency vector and dynamic streams}:
+%A stream $\sigma$ is often thought of as updates to a hypothetical frequency vector $\mathbf{f}(\sigma)$, which holds a counter for each element in $\mathcal{U}$.
+%We will drop the parameterization of $\mathbf{f}$ where it is clear.
+%We will sometimes parameterize $\mathbf{f}(t)$ to refer to $\mathbf{f}$ after reading $t \in [m]$ updates from $\sigma$.
+%$\mathcal{D}$ can be thought of as a lossy compression of $\mathbf{f}$ that approximately preserves some statistic thereof.
+%%
+%%\noindent
+%%\textbf{Dynamic streams}:
+%%If $\mathbf{f}$ is subject to change, then we call $\sigma$ a \emph{turnstile} or \emph{dynamic} stream.
+%The stream $\sigma$'s elements are of the form $(i, c)$, where $i$ is an index of $\mathbf{f}$ (an element of $\mathcal{U}$), $c \in [-L, \dots, L]$ for some integer $L$, and $(i,c)$ indicates that $\mathbf{f}_i \gets \mathbf{f}_i + c$.
+%Such a stream $\sigma$ is called a \emph{turnstile} or sometimes \emph{dynamic} stream. 
+%In the \emph{cash register} model only positive updates are permitted, whereas in the \emph{strict} turnstile model all elements of $\mathbf{f}$ are guaranteed to retain nonnegativity.
 %
-$\mathcal{S}$ is usually determined by sampling hash functions from a suitable hash family. 
-We will call the distribution over such samples $\Pi$ a \emph{sketch distribution}.
-The accumulated object $\mathcal{S}(\sigma)$ is a sketch data structure.
-We will sometimes abuse terms and refer to $\Pi$, $\mathcal{S}$, and $\mathcal{S}(\sigma)$ as \emph{sketches}.
-The space of all possible sketch data structures given a sketch transform $\mathcal{S}$ is the sketch space $\mathbb{S}_\mathcal{S}$.
-$(\mathbb{S}_\mathcal{S}, \oplus)$ forms a commutative monoid, where the operator identity is the result of applying $\mathbb{S}$ to an empty stream.
-
-\noindent
-\textbf{Linear sketching}:
-A sketch distribution $\Pi$ is a \emph{linear sketch} distribution if $\mathcal{S} \sim \Pi$ is a linear function of frequency vectors $\mathbf{f}(\cdot)$ of fixed dimension.
-%Typically $\mathcal{S}$ is drawn from a distribution $\Pi$ over such transforms.
-%We will abuse terminology by referring to sketch distributions, sketch transforms, and sketch data structures as sketches where it is clear which is referenced.
-%In particular, any turnstile streaming algorithm uses a linear sketch as a data structure \cite{li2014turnstile}.
+%\noindent
+%\textbf{Data sketching}:
+%Let $\circ$ be the concatenation operator on streams.
+%For $\mathcal{A}$ a streaming algorithm, we call its data structure $\mathcal{S}$ a \emph{sketch transform} if there is an operator $\oplus$ such that, for any streams $\sigma_1$ and $\sigma_2$, 
+%%
+%\begin{equation} \label{eq:merge}
+%\mathcal{S}(\sigma_1) \oplus \mathcal{S}(\sigma_2) = \mathcal{S}(\sigma_1 \circ \sigma_2).
+%\end{equation}
+%%
+%$\mathcal{S}$ is usually determined by sampling hash functions from a suitable hash family. 
+%We will call the distribution over such samples $\Pi$ a \emph{sketch distribution}.
+%The accumulated object $\mathcal{S}(\sigma)$ is a sketch data structure.
+%We will sometimes abuse terms and refer to $\Pi$, $\mathcal{S}$, and $\mathcal{S}(\sigma)$ as \emph{sketches}.
+%The space of all possible sketch data structures given a sketch transform $\mathcal{S}$ is the sketch space $\mathbb{S}_\mathcal{S}$.
+%$(\mathbb{S}_\mathcal{S}, \oplus)$ forms a commutative monoid, where the operator identity is the result of applying $\mathbb{S}$ to an empty stream.
 %
-For streams $\sigma_1$ and $\sigma_2$ with frequency vectors $\mathbf{f}_1$ and $\mathbf{f}_2$, scalars $a$ and $b$, and linear sketch transform $\mathcal{S}$, 
+%\noindent
+%\textbf{Linear sketching}:
+%A sketch distribution $\Pi$ is a \emph{linear sketch} distribution if $\mathcal{S} \sim \Pi$ is a linear function of frequency vectors $\mathbf{f}(\cdot)$ of fixed dimension.
+%%Typically $\mathcal{S}$ is drawn from a distribution $\Pi$ over such transforms.
+%%We will abuse terminology by referring to sketch distributions, sketch transforms, and sketch data structures as sketches where it is clear which is referenced.
+%%In particular, any turnstile streaming algorithm uses a linear sketch as a data structure \cite{li2014turnstile}.
+%%
+%For streams $\sigma_1$ and $\sigma_2$ with frequency vectors $\mathbf{f}_1$ and $\mathbf{f}_2$, scalars $a$ and $b$, and linear sketch transform $\mathcal{S}$, 
+%%
+%\begin{equation} \label{eq:linearity}
+%a\mathcal{S}(\mathbf{f}_1) + b\mathcal{S}(\mathbf{f}_2) = \mathcal{S}(a\mathbf{f}_1 + b\mathbf{f}_2).
+%\end{equation}
+%%
+%The sketch space and the $+$ operator form a commutative group, where the operator identity is the sketch transform applied to a zero vector.
 %
-\begin{equation} \label{eq:linearity}
-a\mathcal{S}(\mathbf{f}_1) + b\mathcal{S}(\mathbf{f}_2) = \mathcal{S}(a\mathbf{f}_1 + b\mathbf{f}_2).
-\end{equation}
+%\noindent
+%\textbf{The graph stream model}:
+%In this model, the stream $\sigma$ consists of $m$ edge insertions on $n$ vertices. 
+%This is sometimes termed the \emph{insert only} model in the literature.
+%The \emph{dynamic graph stream model} also allows edge deletions.
+%If the graph is weighted, the stream updates the weight of the corresponding edge, possibly bringing it into existence or, in the case of dynamic streams, deleting it.
 %
-The sketch space and the $+$ operator form a commutative group, where the operator identity is the sketch transform applied to a zero vector.
-
-\noindent
-\textbf{The graph stream model}:
-In this model, the stream $\sigma$ consists of $m$ edge insertions on $n$ vertices. 
-This is sometimes termed the \emph{insert only} model in the literature.
-The \emph{dynamic graph stream model} also allows edge deletions.
-If the graph is weighted, the stream updates the weight of the corresponding edge, possibly bringing it into existence or, in the case of dynamic streams, deleting it.
-
-
-\noindent
-\textbf{DegreeSketch and local triangle count heavy hitters}:
-Counting global and local triangles is a canonical problem in both the random access and data stream models. 
-In the data stream model it is known that $\Omega(n^2)$ space is required to even decide whether a graph has any triangles \cite{bar2002reductions}.
-Vertex-local triangle counts are similarly fraught in the data stream model, as they require $\Omega(n)$ space to even write them down. 
-Recent advances in the graph stream literature achieve low variance via clever sampling from edge streams \cite{becchetti2008efficient, lim2015mascot, stefani2017triest}, and have been distributed to achieve better variance \cite{shin2018tri, shin2018dislr}.
-
-We examine a different line of analysis altogether: utilizing \emph{cardinality sketches} to estimate local triangle counts via a sublinearization of the set intersection method.
-We discuss trade-offs between different estimators of the intersection of cardinality sketches, as well as different cardinality sketches themselves.
-We develop \algoname{DegreeSketch}, a distributed sketch data structure composed of cardinality sketches that can answer point queries about unions and intersections of vertex neighborhoods in a manner reminiscent of \algoname{CountSketch}.
-
-We implement \algoname{DegreeSketch} using the famous \algoname{HyperLogLog} sketch \cite{flajolet2007hyperloglog}. 
-We explore various algorithmic optimizations to \algoname{HyperLogLog}, including improved estimators \cite{heule2013hyperloglog, qin2016loglog, lang2017back, ertl2017new}, sparse register implementation \cite{heule2013hyperloglog}, and compressed registers \cite{xiao2017better}.
-We introduce novel improvements to the compressed register implementation described in \cite{xiao2017better}, affording lossless merging of compressed sketches.
-We also discuss the tradeoffs of using different cardinality sketches in implementations, such as \algoname{MinCount} \cite{giroire2009order}.
-
-We demonstrate DegreeSketch as a tool for estimating local neighborhood sizes, as well as the edge- and vertex-local triangle count heavy hitters of large graphs. 
 %
-\begin{enumerate}
-	\item \textbf{Local neighborhood size and neighborhood function}. We estimate the local neighborhood sizes and global neighborhood function of a graph using linear time and $O(n (\varepsilon^{-2} \log\log n + \log n))$ worst-case distributed memory
-	\item \textbf{Edge-local triangle count heavy hitters}. We estimate the edge-local triangle count heavy hitters of a graph using the same asymptotic time and memory requirements.
-	\item \textbf{Vertex-local triangle counts}. We estimate the vertex-local triangle counts (or, alternately, the heavy hitters) of a graph using the same asymptotic time and memory requirements.
-%	linear time and \\$O(n (\varepsilon^{-2} \log\log n + \log n))$ worst-case distributed memory
-\end{enumerate}
+%\noindent
+%\textbf{DegreeSketch and local triangle count heavy hitters}:
+%Counting global and local triangles is a canonical problem in both the random access and data stream models. 
+%In the data stream model it is known that $\Omega(n^2)$ space is required to even decide whether a graph has any triangles \cite{bar2002reductions}.
+%Vertex-local triangle counts are similarly fraught in the data stream model, as they require $\Omega(n)$ space to even write them down. 
+%Recent advances in the graph stream literature achieve low variance via clever sampling from edge streams \cite{becchetti2008efficient, lim2015mascot, stefani2017triest}, and have been distributed to achieve better variance \cite{shin2018tri, shin2018dislr}.
 %
-We analyze the performance of these algorithms on numerous large graphs, and discuss many practical optimizations to the underlying algorithms. 
-We also discuss the limitations of the approach relating to high variance on small intersections and intersections of sets of differing sizes.
-
-
-%------------------------------------------------
-%------------------------------------------------
-\section{Background and Notation} \label{chap:background}
-%------------------------------------------------
-%------------------------------------------------
-
-This chapter introduces the basic concepts and notation that we will use throughout this document.
-We will lay out the basic graph, probability, and linear algebraic definitions and notation conventions that will be referenced later
-We also describe centrality indices as a class of functions on graphs.
-Finally, we describe $k$-universal hash families, an important concept for many sketches, as well as some approximation definitions.
-%Section \ref{sec:approx} introduces the major approximation paradigms we will consider throughout this document. 
-%Section \ref{sec:turnstile} describes the turnstile model of computation and formally defines important streaming data primitives. 
-%Section \ref{sec:sketch} discusses sketching in detail, and introduces the most important classes of sketches that we will use throughout this document. 
-%It also delivers a brief overview of existing semi-streaming graph algorithms. 
-
-
-
-%----------------------------------------------------------------------------------------
-%----------------------------------------------------------------------------------------
-\section{Graph Definitions and Notation} \label{background:sec:graphdef}
-%----------------------------------------------------------------------------------------
-%----------------------------------------------------------------------------------------
-
-Throughout this document we will consider the graph $\mathcal{G} = (\mathcal{V}, \mathcal{E}, \mathbf{w})$.
-We assume that $\mathcal{G}$ has no self loops, and that where $|\mathcal{V}| = n$ and $|\mathcal{E}| = m$.
-For convenience of reference and indexing, we will often assume that $\mathcal{V} = [n]$ and $E = [m]$. 
-%For convenience, we will usually assume that $\mathcal{V} = \{ 0, 1, \dots, n -1 \}$ and use elements of $V$ as subscripts.
-We denote an edge connecting $x, y \in \mathcal{V}$ as $xy \in \mathcal{E}$. 
-In general we will assume that $\mathcal{G}$ is an  undirected graph, except where noted otherwise. 
-When we want to specify a direction on an edge, we will use the tuple notation $(x, y)$ for $x, y \in \mathcal{V}$.
-If $\mathcal{G}$ is a weighted graph, then $\mathbf{w} \in \mathbb{R}^{{n \choose 2}}$ is the vector of edge weights. 
-For $x, y \in \mathcal{V}$, $\mathbf{w}_{xy} \in \mathbb{R}_{\geq 0}$ is the weight associated with the edge $xy$ if $xy \in \mathcal{E}$, and is zero otherwise.
-If $\mathcal{G}$ is unweighted, then $\mathbf{w}_e = 1$ for every $e \in \mathcal{E}$. 
-
-Let $A \in \mathbb{R}^{n\times n}$ be the \emph{adjacency matrix} of $\mathcal{G}$, where $A_{x,y} = \mathbf{w}_{xy}$.
-We will adopt the convention that, if $\mathcal{G}$ is unweighted, then the columns of $A$ correspond to the out edges whereas the rows of $A$ correspond to the in edges. 
-Hence, $A_{:,x}$ is the out adjacency vector of vertex $x$, and $A_{x,:}$ is its in adjacency vector.
-
-For $\mathcal{G}$ an unweighted graph, let $D \in \mathbb{R}^{n\times n}$ be a diagonal matrix, where $D_{x,x}$ is the \emph{degree} or \emph{valency} of vertex $x \in \mathcal{V}$, which can be computed as the row sum of the $x$th row of $A$. 
-We define $L = D - A$ as the \emph{Laplace Matrix} or \emph{Laplacian} of $\mathcal{G}$.
-
-Consider the signed vertex-edge incidence matrix, $B \in \mathbb{R}^{{n \choose 2} \times n}$, given by
+%We examine a different line of analysis altogether: utilizing \emph{cardinality sketches} to estimate local triangle counts via a sublinearization of the set intersection method.
+%We discuss trade-offs between different estimators of the intersection of cardinality sketches, as well as different cardinality sketches themselves.
+%We develop \algoname{DegreeSketch}, a distributed sketch data structure composed of cardinality sketches that can answer point queries about unions and intersections of vertex neighborhoods in a manner reminiscent of \algoname{CountSketch}.
 %
-\begin{equation} \label{eq:veim}
-B_{xy,z} = 
-\begin{cases}
-1 & \textnormal{if $xy \in \mathcal{E}$ and $x=z$} \\
--1 & \textnormal{if $xy \in \mathcal{E}$ and $y=z$} \\
-0 & \textnormal{else}.
-\end{cases}
-\end{equation}
+%We implement \algoname{DegreeSketch} using the famous \algoname{HyperLogLog} sketch \cite{flajolet2007hyperloglog}. 
+%We explore various algorithmic optimizations to \algoname{HyperLogLog}, including improved estimators \cite{heule2013hyperloglog, qin2016loglog, lang2017back, ertl2017new}, sparse register implementation \cite{heule2013hyperloglog}, and compressed registers \cite{xiao2017better}.
+%We introduce novel improvements to the compressed register implementation described in \cite{xiao2017better}, affording lossless merging of compressed sketches.
+%We also discuss the tradeoffs of using different cardinality sketches in implementations, such as \algoname{MinCount} \cite{giroire2009order}.
 %
-Here we let $x$, $y$, and $z$ range over $\mathcal{V}$. 
-Let $W \in \mathbb{R}^{n \times n}$ be a diagonal matrix such that $W_{x,y} = \sqrt{w_{xy}}$.
-Then if $G$ is undirected, we can alternatively write the Laplacian as 
+%We demonstrate DegreeSketch as a tool for estimating local neighborhood sizes, as well as the edge- and vertex-local triangle count heavy hitters of large graphs. 
+%%
+%\begin{enumerate}
+%	\item \textbf{Local neighborhood size and neighborhood function}. We estimate the local neighborhood sizes and global neighborhood function of a graph using linear time and $O(n (\varepsilon^{-2} \log\log n + \log n))$ worst-case distributed memory
+%	\item \textbf{Edge-local triangle count heavy hitters}. We estimate the edge-local triangle count heavy hitters of a graph using the same asymptotic time and memory requirements.
+%	\item \textbf{Vertex-local triangle counts}. We estimate the vertex-local triangle counts (or, alternately, the heavy hitters) of a graph using the same asymptotic time and memory requirements.
+%%	linear time and \\$O(n (\varepsilon^{-2} \log\log n + \log n))$ worst-case distributed memory
+%\end{enumerate}
+%%
+%We analyze the performance of these algorithms on numerous large graphs, and discuss many practical optimizations to the underlying algorithms. 
+%We also discuss the limitations of the approach relating to high variance on small intersections and intersections of sets of differing sizes.
 %
-\begin{equation} \label{eq:laplacian}
-L = BWW^TB^T.
-\end{equation}
 %
-If $\mathcal{G}$ is unweighted, then we can simply write $L = BB^T$. 
-
-%We define some more basic definitions below. 
-A \emph{path} in $\mathcal{G}$ is a series of edges $(x_1 x_2, x_2 x_3, \dots, x_{\ell -1} x_\ell)$ where the tail of each edge is the head of the following edge in the path. 
-The length, alternatively weight, of a path is the sum of the weights of all of its edges.
-If G is unweighted, this is simply the number of edges in the path.
-We can equivalently identify the path with the series of vertices $(x_1, x_2, \dots, x_\ell)$, where an edge links each $x_i, x_{i+1}$ pair.
-For vertices $x,y \in \mathcal{V}$, the \emph{distance} $d_\mathcal{G}(x,y)$ between $x$ and $y$ in $\mathcal{G}$ is the length of the shortest path that begins at $x$ and ends with $y$. 
-There may be more than one such path. 
-If there is no path connecting $x$ to $y$ in $\mathcal{G}$, then we say that $d_\mathcal{G}(x,y) = \infty$. 
-If the graph is clear from context, we may omit the subscripts and write $d(x,y)$.
-We call a path \emph{simple} if it visits every vertex no more than once. 
-
-
-%----------------------------------------------------------------------------------------
-\section{Centrality Indices} \label{sec:centrality}
-%----------------------------------------------------------------------------------------
-
-A centrality index is any map $\mathcal{C}$ that assigns to every $x \in \mathcal{V}$ a nonnegative score.
-The particulars of $\mathcal{C}$ are usually assumed to be conditioned only on the structure of $\mathcal{G}$.
-Consequently, we can identify the centrality index on $\mathcal{G}$ as a function $\mathcal{C}_\mathcal{G} : \mathcal{V} \rightarrow \mathbb{R}_{\geq 0}$.
-For $x \in \mathcal{V}$, we will call $\mathcal{C}_\mathcal{G}(x)$ the centrality score of $x$ in $\mathcal{G}$. 
-Typically, for $x,y \in \mathcal{V}$, $\mathcal{C}_\mathcal{G}(x) > \mathcal{C}_\mathcal{G}(y)$ implies that $x$ is more important than $y$ in $\mathcal{G}$ with respect to the property that $\mathcal{C}$ measures. 
-We will generally drop the subscript from $\mathcal{C}$ when it is clear from context. 
-It is important to note that if $\mathcal{G}$ changes, so may the mapping $\mathcal{C}$. 
-At times, we will write $\mathcal{C}(\mathcal{G})$ or $\mathcal{C}(\mathcal{V})$ to denote the set of all centrality scores of the vertices in $\mathcal{G}$. 
-
-Researchers have considered more exotic centrality indices that rely on metadata, such as vertex and edge colorings \cite{kang2016diffusion}.
-Such notions of centrality are most likely out of scope for the research proposed by this document. 
-%Thinking of a centrality index as a function of $G$ will be important in subsequent sections. 
-
-
-%----------------------------------------------------------------------------------------
-%----------------------------------------------------------------------------------------
-\section{Vector and Matrix definitions and notation} \label{sec:matdef}
-%----------------------------------------------------------------------------------------
-%----------------------------------------------------------------------------------------
-
-
-
-For a vector $v \in \mathbb{R}^n$, we denote the $\ell_p$ norm as follows:
+%%------------------------------------------------
+%%------------------------------------------------
+%\section{Background and Notation} \label{chap:background}
+%%------------------------------------------------
+%%------------------------------------------------
 %
-\begin{equation} \label{eq:pnorm}
-\|v\|_p = \left( \sum\limits_{i=1}^n |v_i|^p \right )^{1/p}.
-\end{equation}
+%This chapter introduces the basic concepts and notation that we will use throughout this document.
+%We will lay out the basic graph, probability, and linear algebraic definitions and notation conventions that will be referenced later
+%We also describe centrality indices as a class of functions on graphs.
+%Finally, we describe $k$-universal hash families, an important concept for many sketches, as well as some approximation definitions.
+%%Section \ref{sec:approx} introduces the major approximation paradigms we will consider throughout this document. 
+%%Section \ref{sec:turnstile} describes the turnstile model of computation and formally defines important streaming data primitives. 
+%%Section \ref{sec:sketch} discusses sketching in detail, and introduces the most important classes of sketches that we will use throughout this document. 
+%%It also delivers a brief overview of existing semi-streaming graph algorithms. 
 %
-As $p \rightarrow 0$, this quantity converges to the special case of the $\ell_0$ norm:
 %
-\begin{equation} \label{eq:0norm}
-\|v\|_0 = \sum_{i=1}^n v_i^0 =  | \{ i \in [n] \mid v_i \neq 0 \} |.
-\end{equation}
 %
-Here we define $0^0 = 0$. 
-Throughout this document we will mostly be concerned with the $\ell_0$ and $\ell_1$ norms of matrix rows and columns. 
-The $p$-th frequency moment $F_p$ of a vector $v$ is related to its $\ell_p$ norm in the following way:
+%%----------------------------------------------------------------------------------------
+%%----------------------------------------------------------------------------------------
+%\section{Graph Definitions and Notation} \label{background:sec:graphdef}
+%%----------------------------------------------------------------------------------------
+%%----------------------------------------------------------------------------------------
 %
-\begin{equation} \label{eq:Fp}
-F_p(v) = \|v\|_p^p = \sum\limits_{i=1}^n v_i^p.
-\end{equation}
+%Throughout this document we will consider the graph $\mathcal{G} = (\mathcal{V}, \mathcal{E}, \mathbf{w})$.
+%We assume that $\mathcal{G}$ has no self loops, and that where $|\mathcal{V}| = n$ and $|\mathcal{E}| = m$.
+%For convenience of reference and indexing, we will often assume that $\mathcal{V} = [n]$ and $E = [m]$. 
+%%For convenience, we will usually assume that $\mathcal{V} = \{ 0, 1, \dots, n -1 \}$ and use elements of $V$ as subscripts.
+%We denote an edge connecting $x, y \in \mathcal{V}$ as $xy \in \mathcal{E}$. 
+%In general we will assume that $\mathcal{G}$ is an  undirected graph, except where noted otherwise. 
+%When we want to specify a direction on an edge, we will use the tuple notation $(x, y)$ for $x, y \in \mathcal{V}$.
+%If $\mathcal{G}$ is a weighted graph, then $\mathbf{w} \in \mathbb{R}^{{n \choose 2}}$ is the vector of edge weights. 
+%For $x, y \in \mathcal{V}$, $\mathbf{w}_{xy} \in \mathbb{R}_{\geq 0}$ is the weight associated with the edge $xy$ if $xy \in \mathcal{E}$, and is zero otherwise.
+%If $\mathcal{G}$ is unweighted, then $\mathbf{w}_e = 1$ for every $e \in \mathcal{E}$. 
 %
-%Given a vector $v \in \mathbb{R}^n$, we use the notation $v_{-i}$ to denote the vector whose elements are all the same as $v$ aside from the $i$th element, which is zero.
+%Let $A \in \mathbb{R}^{n\times n}$ be the \emph{adjacency matrix} of $\mathcal{G}$, where $A_{x,y} = \mathbf{w}_{xy}$.
+%We will adopt the convention that, if $\mathcal{G}$ is unweighted, then the columns of $A$ correspond to the out edges whereas the rows of $A$ correspond to the in edges. 
+%Hence, $A_{:,x}$ is the out adjacency vector of vertex $x$, and $A_{x,:}$ is its in adjacency vector.
 %
-%Much of the literature in the sketching and streaming communities has to do with estimating $\ell_p$ norms or $F_p$ moments of streaming vectors. 
-
-
-
-
-We will also sometimes be interested in matrix norms. 
-For $i \in [n]$ and $j \in [m]$, we will write the $i,j$th element of $M$ as $M_{i,j}$. 
-We will also write the $i$th row and $j$th column of $M$ as $M_{i,:}$ and $M_{:,j}$, respectively. 
-For a matrix $M \in \mathbb{R}^{n \times m}$, we define the Fr\"obenius norm as follows:
+%For $\mathcal{G}$ an unweighted graph, let $D \in \mathbb{R}^{n\times n}$ be a diagonal matrix, where $D_{x,x}$ is the \emph{degree} or \emph{valency} of vertex $x \in \mathcal{V}$, which can be computed as the row sum of the $x$th row of $A$. 
+%We define $L = D - A$ as the \emph{Laplace Matrix} or \emph{Laplacian} of $\mathcal{G}$.
 %
-\begin{equation} \label{eq:fnorm}
-\|M\|_F = \left( \sum\limits_{i=1}^n \sum\limits_{j=1}^m M_{i,j}^2 \right )^{1/2}.
-\end{equation}
+%Consider the signed vertex-edge incidence matrix, $B \in \mathbb{R}^{{n \choose 2} \times n}$, given by
+%%
+%\begin{equation} \label{eq:veim}
+%B_{xy,z} = 
+%\begin{cases}
+%1 & \textnormal{if $xy \in \mathcal{E}$ and $x=z$} \\
+%-1 & \textnormal{if $xy \in \mathcal{E}$ and $y=z$} \\
+%0 & \textnormal{else}.
+%\end{cases}
+%\end{equation}
+%%
+%Here we let $x$, $y$, and $z$ range over $\mathcal{V}$. 
+%Let $W \in \mathbb{R}^{n \times n}$ be a diagonal matrix such that $W_{x,y} = \sqrt{w_{xy}}$.
+%Then if $G$ is undirected, we can alternatively write the Laplacian as 
+%%
+%\begin{equation} \label{eq:laplacian}
+%L = BWW^TB^T.
+%\end{equation}
+%%
+%If $\mathcal{G}$ is unweighted, then we can simply write $L = BB^T$. 
 %
-
-Given $A \in \mathbb{R}^{n\times d}$, let $A = U\Sigma V^T$ be its singular value decomposition (SVD), where $\Sigma \in \mathbb{R}^{n \times n}$ is a diagonal matrix and $U$ and $V$ are orthonormal.
-Set $A_k = U_k \Sigma_k V^T_k$, where $U_k$ and $V_k$ are the leading $k$ columns of $U$ and $V$, respectively, and $\Sigma_k \in \mathbb{R}^{k \times k}$ is a diagonal matrix whose entries are the first $k$ entries of $\Sigma$. 
-$A_k$ is known to solve the optimization problem
+%%We define some more basic definitions below. 
+%A \emph{path} in $\mathcal{G}$ is a series of edges $(x_1 x_2, x_2 x_3, \dots, x_{\ell -1} x_\ell)$ where the tail of each edge is the head of the following edge in the path. 
+%The length, alternatively weight, of a path is the sum of the weights of all of its edges.
+%If G is unweighted, this is simply the number of edges in the path.
+%We can equivalently identify the path with the series of vertices $(x_1, x_2, \dots, x_\ell)$, where an edge links each $x_i, x_{i+1}$ pair.
+%For vertices $x,y \in \mathcal{V}$, the \emph{distance} $d_\mathcal{G}(x,y)$ between $x$ and $y$ in $\mathcal{G}$ is the length of the shortest path that begins at $x$ and ends with $y$. 
+%There may be more than one such path. 
+%If there is no path connecting $x$ to $y$ in $\mathcal{G}$, then we say that $d_\mathcal{G}(x,y) = \infty$. 
+%If the graph is clear from context, we may omit the subscripts and write $d(x,y)$.
+%We call a path \emph{simple} if it visits every vertex no more than once. 
 %
-\begin{equation*}
-\min\limits_{\widetilde{A} \in \mathbb{R}^{n \times d}: \rank(\widetilde{A}) \leq k} \|A-\widetilde{A}\|_F.
-\end{equation*}
 %
-That is, $A_k$ is the rank-$k$ matrix which has the smallest Fr\"obenius residual with $A$.
-This is also true of the spectral norm. 
-We will sometimes denote the rank-$k$ truncated SVD of a product of matrices $A_1\cdots A_n$ as $[A_1\cdots A_n]_k$.
-We use the notation $A^+ = V \Sigma^{-1} U^T$ to denote the Moore-Penrose Pseudoinverse of $A$. 
+%%----------------------------------------------------------------------------------------
+%\section{Centrality Indices} \label{sec:centrality}
+%%----------------------------------------------------------------------------------------
+%
+%A centrality index is any map $\mathcal{C}$ that assigns to every $x \in \mathcal{V}$ a nonnegative score.
+%The particulars of $\mathcal{C}$ are usually assumed to be conditioned only on the structure of $\mathcal{G}$.
+%Consequently, we can identify the centrality index on $\mathcal{G}$ as a function $\mathcal{C}_\mathcal{G} : \mathcal{V} \rightarrow \mathbb{R}_{\geq 0}$.
+%For $x \in \mathcal{V}$, we will call $\mathcal{C}_\mathcal{G}(x)$ the centrality score of $x$ in $\mathcal{G}$. 
+%Typically, for $x,y \in \mathcal{V}$, $\mathcal{C}_\mathcal{G}(x) > \mathcal{C}_\mathcal{G}(y)$ implies that $x$ is more important than $y$ in $\mathcal{G}$ with respect to the property that $\mathcal{C}$ measures. 
+%We will generally drop the subscript from $\mathcal{C}$ when it is clear from context. 
+%It is important to note that if $\mathcal{G}$ changes, so may the mapping $\mathcal{C}$. 
+%At times, we will write $\mathcal{C}(\mathcal{G})$ or $\mathcal{C}(\mathcal{V})$ to denote the set of all centrality scores of the vertices in $\mathcal{G}$. 
+%
+%Researchers have considered more exotic centrality indices that rely on metadata, such as vertex and edge colorings \cite{kang2016diffusion}.
+%Such notions of centrality are most likely out of scope for the research proposed by this document. 
+%%Thinking of a centrality index as a function of $G$ will be important in subsequent sections. 
+%
+%
+%%----------------------------------------------------------------------------------------
+%%----------------------------------------------------------------------------------------
+%\section{Vector and Matrix definitions and notation} \label{sec:matdef}
+%%----------------------------------------------------------------------------------------
+%%----------------------------------------------------------------------------------------
+%
+%
+%
+%For a vector $v \in \mathbb{R}^n$, we denote the $\ell_p$ norm as follows:
+%%
+%\begin{equation} \label{eq:pnorm}
+%\|v\|_p = \left( \sum\limits_{i=1}^n |v_i|^p \right )^{1/p}.
+%\end{equation}
+%%
+%As $p \rightarrow 0$, this quantity converges to the special case of the $\ell_0$ norm:
+%%
+%\begin{equation} \label{eq:0norm}
+%\|v\|_0 = \sum_{i=1}^n v_i^0 =  | \{ i \in [n] \mid v_i \neq 0 \} |.
+%\end{equation}
+%%
+%Here we define $0^0 = 0$. 
+%Throughout this document we will mostly be concerned with the $\ell_0$ and $\ell_1$ norms of matrix rows and columns. 
+%The $p$-th frequency moment $F_p$ of a vector $v$ is related to its $\ell_p$ norm in the following way:
+%%
+%\begin{equation} \label{eq:Fp}
+%F_p(v) = \|v\|_p^p = \sum\limits_{i=1}^n v_i^p.
+%\end{equation}
+%%
+%%Given a vector $v \in \mathbb{R}^n$, we use the notation $v_{-i}$ to denote the vector whose elements are all the same as $v$ aside from the $i$th element, which is zero.
+%%
+%%Much of the literature in the sketching and streaming communities has to do with estimating $\ell_p$ norms or $F_p$ moments of streaming vectors. 
+%
+%
+%
+%
+%We will also sometimes be interested in matrix norms. 
+%For $i \in [n]$ and $j \in [m]$, we will write the $i,j$th element of $M$ as $M_{i,j}$. 
+%We will also write the $i$th row and $j$th column of $M$ as $M_{i,:}$ and $M_{:,j}$, respectively. 
+%For a matrix $M \in \mathbb{R}^{n \times m}$, we define the Fr\"obenius norm as follows:
+%%
+%\begin{equation} \label{eq:fnorm}
+%\|M\|_F = \left( \sum\limits_{i=1}^n \sum\limits_{j=1}^m M_{i,j}^2 \right )^{1/2}.
+%\end{equation}
+%%
+%
+%Given $A \in \mathbb{R}^{n\times d}$, let $A = U\Sigma V^T$ be its singular value decomposition (SVD), where $\Sigma \in \mathbb{R}^{n \times n}$ is a diagonal matrix and $U$ and $V$ are orthonormal.
+%Set $A_k = U_k \Sigma_k V^T_k$, where $U_k$ and $V_k$ are the leading $k$ columns of $U$ and $V$, respectively, and $\Sigma_k \in \mathbb{R}^{k \times k}$ is a diagonal matrix whose entries are the first $k$ entries of $\Sigma$. 
+%$A_k$ is known to solve the optimization problem
+%%
+%\begin{equation*}
+%\min\limits_{\widetilde{A} \in \mathbb{R}^{n \times d}: \rank(\widetilde{A}) \leq k} \|A-\widetilde{A}\|_F.
+%\end{equation*}
+%%
+%That is, $A_k$ is the rank-$k$ matrix which has the smallest Fr\"obenius residual with $A$.
+%This is also true of the spectral norm. 
+%We will sometimes denote the rank-$k$ truncated SVD of a product of matrices $A_1\cdots A_n$ as $[A_1\cdots A_n]_k$.
+%We use the notation $A^+ = V \Sigma^{-1} U^T$ to denote the Moore-Penrose Pseudoinverse of $A$. 
+%
+%
+%
+%
+%
+%
+%
+%
+%%----------------------------------------------------------------------------------------
+%%----------------------------------------------------------------------------------------
+%\section{\algoname{DegreeSketch} with Applications to Neighborhood Approximation and Local Triangle Count Heavy Hitter Estimation}
+% \label{chap:DS}
+%%----------------------------------------------------------------------------------------
+%%----------------------------------------------------------------------------------------
 
 
+We present \algoname{DegreeSketch}, a semi-streaming distributed sketch datastructure and demonstrate its utility for estimating local neighborhood sizes and local triangle count heavy hitters on massive graphs.
+\algoname{DegreeSketch} consists of vertex-centric cardinality sketches distributed across a set of processors that are accumulated in a single pass.
+The $t$th local neighborhood of a vertex $v$ in a graph $G$, $\mathcal{C}^{\algoname{Nbhd}}_{t}(v)$, is the number of vertices reachable in $G$ from $v$ by traversing at most $t$ edges, whereas the local triangle count $\mathcal{C}^{\algoname{Tri}}(v)$ is the number of 3-cycles including $v$.
+Both metrics are useful in graph analysis applications, but exact computation scales poorly as graph sizes grow. 
+We present pass-efficient algorithms for estimating both local neighborhoods and triangle counts using \algoname{DegreeSketch}.
+In our experiments with implement \algoname{DegreeSketch} using the celebrated hyperloglog cardinality sketches and utilize a novel communication infrastructure to achieve state-of-the-art performance in distributed memory. 
 
-
-
-
-
-
-%----------------------------------------------------------------------------------------
-%----------------------------------------------------------------------------------------
-\section{\algoname{DegreeSketch} with Applications to Neighborhood Approximation and Local Triangle Count Heavy Hitter Estimation}
- \label{chap:DS}
-%----------------------------------------------------------------------------------------
-%----------------------------------------------------------------------------------------
-
-
-In this chapter we present \algoname{DegreeSketch}, a semi-streaming distributed sketch datastructure and demonstrate its utility for estimating local triangle count heavy hitters.
-\algoname{DegreeSketch} consists of vertex-centric cardinality sketches distributed across a set of processors. 
-While other semi-streaming approaches to estimating local triangle counts depend on sampling, \algoname{DegreeSketch} is a persistent queryable data structure.
-We discuss the advantages and limitations of this approach, and present empirical results.
+ 
+%While other semi-streaming approaches to estimating local triangle counts depend on sampling, \algoname{DegreeSketch} is a persistent queryable data structure.
+%We discuss the advantages and limitations of this approach, and present empirical results.
 
 %----------------------------------------------------------------------------------------
 \section{Introduction and Related Work}
@@ -460,8 +468,8 @@ Consequently, triangles and triangle counting arise often in applications.
 Both the global count of triangles and the vertex-local counts, i.e. the number of triangles incident upon each vertex, are key to network analysis and graph theory topics such as cohesiveness \cite{lim2015mascot}, global and local clustering coefficients \cite{tsourakakis2008fast}, and trusses \cite{cohen2008trusses}.
 These counts are also directly useful in many applications, such as spam detection \cite{becchetti2010efficient},  community discovery \cite{wang2010triangulation, berry2011tolerating}, and protein interaction analysis \cite{milo2002network}.
 
-Although not traditionally considered a centrality index, one can think of the number of triangles incident upon a vertex as a generalization of its degree centrality. 
-To wit, we define the \emph{triangle count centrality} of a vertex $x \in \mathcal{V}$ as
+%Although not traditionally considered a centrality index, one can think of the number of triangles incident upon a vertex as a generalization of its degree centrality. 
+We define the \emph{triangle centrality} of a vertex $x \in \mathcal{V}$ as
 %
 \begin{equation}
 	\mathcal{C}^{\algoname{Tri}}(x) = |\{yz \in \mathcal{E} \mid xy, zx \in \mathcal{E} \wedge |\{x, y, z\}| = 3\}|.
@@ -2436,6 +2444,12 @@ As promised, the wall time is linear in the number edges for both accumulation a
 Similarly, Figure~\ref{fig:patents_scaling} measures the the time in seconds spent accumulating $\algoname{DegreeSketch}$ and performing the vertex-local estimation on the cit-Patents graph, where $N$ varies from 1 up to 72. 
 The wall time gain of increasing $N$ is linear in this case as well. 
 
+%----------------------------------------------------------------------------------------
+\section{Acknowledgements}
+%----------------------------------------------------------------------------------------
+
+This work was performed under the auspices of the U.S. Department of Energy by Lawrence Livermore National Laboratory under Contract DE-AC52-07NA27344 (LLNL-CONF-757958). 
+Experiments were performed at the Livermore Computing Facility.
 
 
 %\begin{figure}
